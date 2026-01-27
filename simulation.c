@@ -131,8 +131,20 @@ void scout_behavior(Bee *bee, Flower *flowers, int num_flowers)
     // Random walk dok ne nađe cvet
     if (bee->target_flower == -1)
     {
-        bee->position.x += random_float(-BEE_SPEED, BEE_SPEED);
-        bee->position.y += random_float(-BEE_SPEED, BEE_SPEED);
+        if (random_float(0, 1) < 0.5f)
+        {
+            // 80% vremena: mali koraci (exploration)
+            bee->position.x += random_float(-BEE_SPEED, BEE_SPEED);
+            bee->position.y += random_float(-BEE_SPEED, BEE_SPEED);
+        }
+        else
+        {
+            // 20% vremena: veliki skok (avoid local minima)
+            bee->position.x += random_float(-BEE_SPEED * 10, BEE_SPEED * 10);
+            bee->position.y += random_float(-BEE_SPEED * 10, BEE_SPEED * 10);
+        }
+
+        // printf("Bee %d searching\n", bee->id);
 
         // Proveri da li je našao cvet
         for (int i = 0; i < num_flowers; i++)
@@ -143,6 +155,9 @@ void scout_behavior(Bee *bee, Flower *flowers, int num_flowers)
                 bee->target_flower = i;
                 bee->nectar_found = flowers[i].nectar_available;
                 bee->state = RETURNING;
+                // if(i<20){
+                //     printf("Bee %d found a flower\n", bee->id);
+                // }
                 break;
             }
         }
@@ -243,6 +258,8 @@ void idle_bees_watch_dances(Simulation *sim)
 
                     // Povećaj broj followers za taj ples
                     sim->dances[chosen_dance].followers++;
+                    // cuva lokaciju cveta
+                    bee->target_location = sim->dances[chosen_dance].flower_location;
 
                     // Pronađi pčelu koja pleše i ažuriraj je
                     int dancer_id = sim->dances[chosen_dance].bee_id;
@@ -257,51 +274,41 @@ void idle_bees_watch_dances(Simulation *sim)
 
 void follower_behavior(Bee *bee, Simulation *sim)
 {
-    if (bee->following_dance < 0)
+    Vector2D target = bee->target_location;
+
+    float dist = distance(bee->position, target);
+
+    // Kreni ka cilju
+    move_towards(bee, target);
+
+    // Proveri da li je stigao
+    if (dist < 10.0f)
     {
-        bee->state = IDLE;
-        return;
-    }
+        bee->state = FORAGING;
 
-    WaggleDance *dance = &sim->dances[bee->following_dance];
-    int leader_id = dance->bee_id;
-    Bee *leader = &sim->bees[leader_id];
-
-    // Ako je leader još u košnici (pleše), čekaj
-    if (leader->state == DANCING)
-    {
-        return;
-    }
-
-    // Ako je leader krenuo, prati ga ka cvetu
-    if (leader->state == FORAGING)
-    {
-        Vector2D target = dance->flower_location;
-        move_towards(bee, target);
-
-        // Proveri da li je stigao do cveta
-        float dist = distance(bee->position, target);
-        if (dist < 5.0f)
+        // Pronađi cvet
+        for (int i = 0; i < NUM_FLOWERS; i++)
         {
-            bee->state = FORAGING;
-
-            // Pronađi koji je to cvet
-            for (int i = 0; i < NUM_FLOWERS; i++)
+            float flower_dist = distance(sim->flowers[i].position, target);
+            if (flower_dist < 20.0f)
             {
-                float flower_dist = distance(sim->flowers[i].position, target);
-                if (flower_dist < 10.0f)
-                {
-                    bee->target_flower = i;
-                    break;
-                }
+                bee->target_flower = i;
+                break;
             }
         }
+
+        // Ako nije našao cvet, vrati se
+        if (bee->target_flower == -1)
+        {
+            bee->state = RETURNING;
+        }
     }
-    else
+
+    // Provera energije - ako je niska, vrati se
+    if (bee->energy < MAX_ENERGY * 0.2f)
     {
-        // Leader je već završio ili odustao
-        bee->state = IDLE;
-        bee->following_dance = -1;
+        bee->state = RETURNING;
+        bee->target_flower = -1;
     }
 }
 
@@ -357,8 +364,6 @@ void foraging_behavior(Bee *bee, Simulation *sim)
 }
 
 // ============ MAIN UPDATE LOOP ============
-
-// ============ MAIN UPDATE LOOP (UPDATED) ============
 
 void update_bees(Simulation *sim)
 {
@@ -538,6 +543,54 @@ void save_results(Simulation *sim, const char *filename)
     printf("Results saved to %s\n", filename);
 }
 
+// ============ CSV EXPORT FOR VISUALIZATION ============
+
+void save_positions_csv(Simulation *sim, int timestep)
+{
+    static FILE *f = NULL;
+
+    // Otvori fajl samo prvi put
+    if (f == NULL)
+    {
+        f = fopen("positions.csv", "w");
+        if (!f)
+        {
+            printf("Error: Cannot create positions.csv\n");
+            return;
+        }
+        // Header
+        fprintf(f, "timestep,type,id,x,y,state,nectar\n");
+    }
+
+    // Sačuvaj cvetove
+    for (int i = 0; i < NUM_FLOWERS; i++)
+    {
+        fprintf(f, "%d,flower,%d,%.2f,%.2f,0,%.2f\n",
+                timestep, i,
+                sim->flowers[i].position.x,
+                sim->flowers[i].position.y,
+                sim->flowers[i].nectar_available);
+    }
+
+    // Sačuvaj pčele
+    for (int i = 0; i < NUM_BEES; i++)
+    {
+        fprintf(f, "%d,bee,%d,%.2f,%.2f,%d,0\n",
+                timestep, i,
+                sim->bees[i].position.x,
+                sim->bees[i].position.y,
+                (int)sim->bees[i].state);
+    }
+
+    // Zatvori fajl na kraju simulacije
+    if (timestep == MAX_TIMESTEPS - 1)
+    {
+        fclose(f);
+        f = NULL;
+        printf("Positions saved to positions.csv\n");
+    }
+}
+
 // ============ MAIN ============
 
 int main(int argc, char **argv)
@@ -560,12 +613,19 @@ int main(int argc, char **argv)
     {
         simulation_step(sim);
 
+        if (t % 3 == 0 && t > 0 && t < 500)
+        {
+            save_positions_csv(sim, t);
+        }
+
         // Ispis svakih 100 koraka
-        if (t % 100 == 0)
+        if (t > 200 && t < 300)
         {
             print_statistics(sim);
         }
     }
+    // poslednji frejm
+    //  save_positions_csv(sim, MAX_TIMESTEPS - 1);
 
     clock_t end = clock();
     double elapsed = (double)(end - start) / CLOCKS_PER_SEC;
@@ -573,7 +633,7 @@ int main(int argc, char **argv)
     printf("\n=== Final Results ===\n");
     printf("Total nectar collected: %.2f\n", sim->total_nectar_collected);
     printf("Execution time: %.3f seconds\n", elapsed);
-    printf("Throughput: %.2f timesteps/sec\n", MAX_TIMESTEPS / elapsed);
+    // printf("Throughput: %.2f timesteps/sec\n", MAX_TIMESTEPS / elapsed);
 
     save_results(sim, "results_sequential.txt");
 
