@@ -7,8 +7,6 @@
 #include "types.h"
 #include "config.h"
 
-// ============ UTILITY FUNCTIONS ============
-
 float distance(Vector2D a, Vector2D b)
 {
     float dx = a.x - b.x;
@@ -16,7 +14,6 @@ float distance(Vector2D a, Vector2D b)
     return sqrtf(dx * dx + dy * dy);
 }
 
-// Thread-safe random number generator using thread-local state
 float random_float_r(unsigned int *seed, float min, float max)
 {
     return min + (max - min) * ((float)rand_r(seed) / RAND_MAX);
@@ -41,8 +38,6 @@ Vector2D normalize(Vector2D v)
     return v;
 }
 
-// ============ INITIALIZATION ============
-
 void init_bees(Bee *bees, int num_bees)
 {
     unsigned int seed = 42;
@@ -54,7 +49,6 @@ void init_bees(Bee *bees, int num_bees)
         bees[i].velocity.x = 0;
         bees[i].velocity.y = 0;
 
-        // 20% scout, ostali idle
         if (i < (int)(num_bees * SCOUT_RATIO))
         {
             bees[i].state = SCOUT;
@@ -106,7 +100,6 @@ Simulation *create_simulation()
 
 void destroy_simulation(Simulation *sim)
 {
-    // Uništi lockove za cvetove
     for (int i = 0; i < NUM_FLOWERS; i++)
     {
         omp_destroy_lock(&sim->flowers[i].lock);
@@ -116,8 +109,6 @@ void destroy_simulation(Simulation *sim)
     free(sim->dances);
     free(sim);
 }
-
-// ============ MOVEMENT & BEHAVIOR ============
 
 void move_towards(Bee *bee, Vector2D target)
 {
@@ -138,23 +129,20 @@ void move_towards(Bee *bee, Vector2D target)
 
 void scout_behavior(Bee *bee, Flower *flowers, int num_flowers, unsigned int *seed)
 {
-    // Random walk dok ne nađe cvet
     if (bee->target_flower == -1)
     {
+        // Levy flight
         if (random_float_r(seed, 0, 1) < 0.5f)
         {
-            // 50% vremena: mali koraci (exploration)
             bee->position.x += random_float_r(seed, -BEE_SPEED, BEE_SPEED);
             bee->position.y += random_float_r(seed, -BEE_SPEED, BEE_SPEED);
         }
         else
         {
-            // 50% vremena: veliki skok (avoid local minima)
             bee->position.x += random_float_r(seed, -BEE_SPEED * 10, BEE_SPEED * 10);
             bee->position.y += random_float_r(seed, -BEE_SPEED * 10, BEE_SPEED * 10);
         }
 
-        // Proveri da li je našao cvet
         for (int i = 0; i < num_flowers; i++)
         {
             float dist = distance(bee->position, flowers[i].position);
@@ -184,9 +172,6 @@ void returning_behavior(Bee *bee)
     }
 }
 
-// ============ WAGGLE DANCE ============
-
-// Thread-safe dodavanje plesa
 void create_dance(Simulation *sim, Bee *bee, omp_lock_t *dance_lock)
 {
     WaggleDance dance;
@@ -198,7 +183,6 @@ void create_dance(Simulation *sim, Bee *bee, omp_lock_t *dance_lock)
     dance.distance_from_hive = distance(hive_pos, dance.flower_location);
     dance.followers = 0;
 
-    // Kritična sekcija za dodavanje plesa
     omp_set_lock(dance_lock);
     sim->dances[sim->num_dances] = dance;
     sim->num_dances++;
@@ -245,9 +229,6 @@ int choose_dance(Simulation *sim, unsigned int *seed)
 
 void idle_bees_watch_dances(Simulation *sim, unsigned int *seeds)
 {
-    // Ova funkcija se izvršava serijski jer ima puno zavisnosti
-    // ali možemo paralelizovati inicijalni izbor
-
 #pragma omp parallel for schedule(dynamic, 100)
     for (int i = 0; i < NUM_BEES; i++)
     {
@@ -265,7 +246,6 @@ void idle_bees_watch_dances(Simulation *sim, unsigned int *seeds)
                     bee->following_dance = chosen_dance;
                     bee->state = FOLLOWER;
 
-// Atomic increment za followers
 #pragma omp atomic
                     sim->dances[chosen_dance].followers++;
 
@@ -279,8 +259,6 @@ void idle_bees_watch_dances(Simulation *sim, unsigned int *seeds)
         }
     }
 }
-
-// ============ FOLLOWER BEHAVIOR ============
 
 void follower_behavior(Bee *bee, Simulation *sim)
 {
@@ -316,8 +294,6 @@ void follower_behavior(Bee *bee, Simulation *sim)
     }
 }
 
-// ============ FORAGING BEHAVIOR ============
-
 void foraging_behavior(Bee *bee, Simulation *sim, float *local_nectar)
 {
     if (bee->target_flower < 0)
@@ -328,7 +304,6 @@ void foraging_behavior(Bee *bee, Simulation *sim, float *local_nectar)
 
     Flower *flower = &sim->flowers[bee->target_flower];
 
-    // Koristi lock za pristup cvetu
     omp_set_lock(&flower->lock);
 
     if (flower->bees_feeding < flower->capacity && flower->nectar_available > 0)
@@ -338,7 +313,6 @@ void foraging_behavior(Bee *bee, Simulation *sim, float *local_nectar)
         float collected = fminf(10.0f, flower->nectar_available);
         flower->nectar_available -= collected;
 
-        // Dodaj u lokalni akumulator umesto globalnog
         *local_nectar += collected;
         bee->energy = fminf(MAX_ENERGY, bee->energy + collected * 0.5f);
 
@@ -367,8 +341,6 @@ void foraging_behavior(Bee *bee, Simulation *sim, float *local_nectar)
         }
     }
 }
-
-// ============ MAIN UPDATE LOOP ============
 
 void update_bees(Simulation *sim, unsigned int *seeds, omp_lock_t *dance_lock)
 {
@@ -429,7 +401,6 @@ void update_bees(Simulation *sim, unsigned int *seeds, omp_lock_t *dance_lock)
                 break;
             }
 
-            // Provera energije
             if (bee->energy <= 0)
             {
                 Vector2D hive_pos = {HIVE_X, HIVE_Y};
@@ -447,7 +418,6 @@ void update_bees(Simulation *sim, unsigned int *seeds, omp_lock_t *dance_lock)
                 }
             }
 
-            // Granice prostora
             if (bee->position.x < 0)
                 bee->position.x = 0;
             if (bee->position.x > WORLD_SIZE)
@@ -463,7 +433,6 @@ void update_bees(Simulation *sim, unsigned int *seeds, omp_lock_t *dance_lock)
 
     sim->total_nectar_collected += total_nectar_local;
 
-    // Idle pčele gledaju plesove (posle paralelne sekcije)
     idle_bees_watch_dances(sim, seeds);
 }
 
@@ -475,10 +444,6 @@ void update_flowers(Simulation *sim)
         if (sim->flowers[i].nectar_available < sim->flowers[i].nectar_total)
         {
             sim->flowers[i].nectar_available += NECTAR_REGEN_RATE;
-            if (sim->flowers[i].nectar_available > sim->flowers[i].nectar_total)
-            {
-                sim->flowers[i].nectar_available = sim->flowers[i].nectar_total;
-            }
         }
     }
 }
@@ -491,8 +456,6 @@ void simulation_step(Simulation *sim, unsigned int *seeds, omp_lock_t *dance_loc
     sim->num_dances = 0;
     sim->timestep++;
 }
-
-// ============ STATISTICS ============
 
 void print_statistics(Simulation *sim)
 {
@@ -552,11 +515,9 @@ void save_results(Simulation *sim, const char *filename)
     printf("Results saved to %s\n", filename);
 }
 
-// ============ MAIN ============
-
 int main(int argc, char **argv)
 {
-    int num_threads = 4; // Default
+    int num_threads = 4;
     if (argc > 1)
     {
         num_threads = atoi(argv[1]);
@@ -573,25 +534,21 @@ int main(int argc, char **argv)
 
     Simulation *sim = create_simulation();
 
-    // Kreiraj seed-ove za svaki thread
     unsigned int *seeds = (unsigned int *)malloc(num_threads * sizeof(unsigned int));
     for (int i = 0; i < num_threads; i++)
     {
-        seeds[i] = 42 + i * 1000;
+        seeds[i] = i * 1000;
     }
 
-    // Lock za dodavanje plesova
     omp_lock_t dance_lock;
     omp_init_lock(&dance_lock);
 
-    // Meri vreme
     double start = omp_get_wtime();
 
     for (int t = 0; t < MAX_TIMESTEPS; t++)
     {
         simulation_step(sim, seeds, &dance_lock);
 
-        // Ispis svakih 1000 koraka
         // if (t % 1000 == 0)
         // {
         //     print_statistics(sim);

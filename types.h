@@ -1,6 +1,6 @@
-// types.h
 #ifndef TYPES_H
 #define TYPES_H
+#include <omp.h>
 
 typedef struct
 {
@@ -9,12 +9,12 @@ typedef struct
 
 typedef enum
 {
-    IDLE,      // U košnici, čeka
-    SCOUT,     // Traži cvetove
-    RETURNING, // Vraća se sa informacijom
-    DANCING,   // Pleše u košnici
-    FOLLOWER,  // Prati drugu pčelu
-    FORAGING   // Skuplja nektar
+    IDLE,
+    SCOUT,
+    RETURNING,
+    DANCING,
+    FOLLOWER,
+    FORAGING
 } BeeState;
 
 typedef struct
@@ -25,14 +25,13 @@ typedef struct
     BeeState state;
 
     float energy;
-    int target_flower;        // ID cveta ka kojem ide (-1 ako nema)
-    int following_dance;      // ID plesa koji prati (-1 ako ne prati)
-    Vector2D target_location; // umesto da prati ples, cuva cilj lokalno
+    int target_flower;   //-1 if empty
+    int following_dance; //-1 if empty
+    Vector2D target_location;
 
-    // Za dance
-    float nectar_found;  // Količina nektara pronađenog
-    int dance_followers; // Broj followers
-    int dance_timer;     // Koliko još pleše
+    float nectar_found;
+    int dance_followers;
+    int dance_timer;
 } Bee;
 
 typedef struct
@@ -40,8 +39,9 @@ typedef struct
     Vector2D position;
     float nectar_available;
     float nectar_total;
-    int bees_feeding; // Trenutno broj pčela
-    int capacity;     // Max kapacitet
+    int bees_feeding;
+    int capacity;
+    omp_lock_t lock;
 } Flower;
 
 typedef struct
@@ -60,9 +60,11 @@ typedef struct
     WaggleDance *dances;
     int num_dances;
 
-    // Statistika
     float total_nectar_collected;
     int timestep;
+
+    int num_local_bees;
+    int bee_offset;
 } Simulation;
 
 #endif

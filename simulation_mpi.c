@@ -3,75 +3,9 @@
 #include <math.h>
 #include <string.h>
 #include <time.h>
-#include "mpi.h"
-
-// ============ TYPES (bez OMP) ============
-
-typedef struct
-{
-    float x, y;
-} Vector2D;
-
-typedef enum
-{
-    IDLE,
-    SCOUT,
-    RETURNING,
-    DANCING,
-    FOLLOWER,
-    FORAGING
-} BeeState;
-
-typedef struct
-{
-    int id;
-    Vector2D position;
-    Vector2D velocity;
-    BeeState state;
-    float energy;
-    int target_flower;
-    int following_dance;
-    Vector2D target_location;
-    float nectar_found;
-    int dance_followers;
-    int dance_timer;
-} Bee;
-
-typedef struct
-{
-    Vector2D position;
-    float nectar_available;
-    float nectar_total;
-    int bees_feeding;
-    int capacity;
-} Flower;
-
-typedef struct
-{
-    int bee_id;
-    Vector2D flower_location;
-    float nectar_quality;
-    float distance_from_hive;
-    int followers;
-} WaggleDance;
-
-typedef struct
-{
-    Bee *bees;
-    Flower *flowers;
-    WaggleDance *dances;
-    int num_dances;
-    float total_nectar_collected;
-    int timestep;
-
-    // MPI specifično
-    int num_local_bees;
-    int bee_offset;
-} Simulation;
-
+#include <mpi.h>
 #include "config.h"
-
-// ============ UTILITY FUNCTIONS ============
+#include "types.h"
 
 float distance(Vector2D a, Vector2D b)
 {
@@ -103,8 +37,6 @@ Vector2D normalize(Vector2D v)
     }
     return v;
 }
-
-// ============ INITIALIZATION ============
 
 void init_all_bees(Bee *bees, int num_bees, unsigned int *seed)
 {
@@ -150,23 +82,19 @@ Simulation *create_simulation(int rank, int size)
 {
     Simulation *sim = (Simulation *)malloc(sizeof(Simulation));
 
-    // Svi procesi imaju sve pčele (za dance synchronization)
     sim->bees = (Bee *)malloc(NUM_BEES * sizeof(Bee));
-    // Svi imaju sve cvetove (replicirano)
     sim->flowers = (Flower *)malloc(NUM_FLOWERS * sizeof(Flower));
     sim->dances = (WaggleDance *)malloc(NUM_BEES * sizeof(WaggleDance));
     sim->num_dances = 0;
     sim->total_nectar_collected = 0;
     sim->timestep = 0;
 
-    // Podela pčela između procesa
     int bees_per_proc = NUM_BEES / size;
     int remainder = NUM_BEES % size;
 
     sim->bee_offset = rank * bees_per_proc + (rank < remainder ? rank : remainder);
     sim->num_local_bees = bees_per_proc + (rank < remainder ? 1 : 0);
 
-    // Inicijalizacija sa istim seedom na svim procesima
     unsigned int seed = 42;
     init_all_bees(sim->bees, NUM_BEES, &seed);
 
@@ -183,8 +111,6 @@ void destroy_simulation(Simulation *sim)
     free(sim->dances);
     free(sim);
 }
-
-// ============ MOVEMENT & BEHAVIOR ============
 
 void move_towards(Bee *bee, Vector2D target)
 {
@@ -207,6 +133,7 @@ void scout_behavior(Bee *bee, Flower *flowers, int num_flowers, unsigned int *se
 {
     if (bee->target_flower == -1)
     {
+        // Levy flight
         if (random_float_r(seed, 0, 1) < 0.5f)
         {
             bee->position.x += random_float_r(seed, -BEE_SPEED, BEE_SPEED);
@@ -246,8 +173,6 @@ void returning_behavior(Bee *bee)
         bee->dance_timer = DANCE_DURATION;
     }
 }
-
-// ============ WAGGLE DANCE ============
 
 void create_dance(Simulation *sim, Bee *bee)
 {
@@ -304,7 +229,6 @@ int choose_dance(Simulation *sim, unsigned int *seed)
 
 void idle_bees_watch_dances(Simulation *sim, unsigned int *seed)
 {
-    // Samo lokalne pčele
     for (int i = sim->bee_offset; i < sim->bee_offset + sim->num_local_bees; i++)
     {
         Bee *bee = &sim->bees[i];
@@ -329,8 +253,6 @@ void idle_bees_watch_dances(Simulation *sim, unsigned int *seed)
         }
     }
 }
-
-// ============ FOLLOWER BEHAVIOR ============
 
 void follower_behavior(Bee *bee, Simulation *sim)
 {
@@ -365,8 +287,6 @@ void follower_behavior(Bee *bee, Simulation *sim)
         bee->target_flower = -1;
     }
 }
-
-// ============ FORAGING BEHAVIOR ============
 
 void foraging_behavior(Bee *bee, Simulation *sim, float *local_nectar)
 {
@@ -410,26 +330,20 @@ void foraging_behavior(Bee *bee, Simulation *sim, float *local_nectar)
     }
 }
 
-// ============ MPI COMMUNICATION ============
-
-// MPI datatype za Bee strukturu
 MPI_Datatype create_bee_type()
 {
     MPI_Datatype bee_type;
 
-    // Koristimo MPI_BYTE za celu strukturu (jednostavnije)
     MPI_Type_contiguous(sizeof(Bee), MPI_BYTE, &bee_type);
     MPI_Type_commit(&bee_type);
 
     return bee_type;
 }
 
-// Sinhronizacija pčela između procesa
 void sync_bees(Simulation *sim, int rank, int size, MPI_Datatype bee_type)
 {
-    // Svaki proces šalje svoje lokalne pčele svima ostalima
     int *recvcounts = (int *)malloc(size * sizeof(int));
-    int *displs = (int *)malloc(size * sizeof(int));
+    int *displacements = (int *)malloc(size * sizeof(int));
 
     int bees_per_proc = NUM_BEES / size;
     int remainder = NUM_BEES % size;
@@ -438,29 +352,26 @@ void sync_bees(Simulation *sim, int rank, int size, MPI_Datatype bee_type)
     for (int i = 0; i < size; i++)
     {
         recvcounts[i] = bees_per_proc + (i < remainder ? 1 : 0);
-        displs[i] = offset;
+        displacements[i] = offset;
         offset += recvcounts[i];
     }
 
-    // Allgatherv - svaki proces deli svoje pčele sa svima
     MPI_Allgatherv(
-        sim->bees + sim->bee_offset, // send buffer
-        sim->num_local_bees,         // send count
+        sim->bees + sim->bee_offset,
+        sim->num_local_bees,
         bee_type,
-        sim->bees, // recv buffer
+        sim->bees,
         recvcounts,
-        displs,
+        displacements,
         bee_type,
         MPI_COMM_WORLD);
 
     free(recvcounts);
-    free(displs);
+    free(displacements);
 }
 
-// Sinhronizacija cvetova - MPI_Allreduce za nectar_available
 void sync_flowers(Simulation *sim, int rank, int size)
 {
-    // Prikupi minimalne vrednosti nektara (konzervativno)
     float *local_nectar = (float *)malloc(NUM_FLOWERS * sizeof(float));
     float *global_nectar = (float *)malloc(NUM_FLOWERS * sizeof(float));
 
@@ -480,19 +391,16 @@ void sync_flowers(Simulation *sim, int rank, int size)
     free(global_nectar);
 }
 
-// Sinhronizacija plesova
 void sync_dances(Simulation *sim, int rank, int size)
 {
-    // Prikupi broj plesova od svakog procesa
     int *dance_counts = (int *)malloc(size * sizeof(int));
     MPI_Allgather(&sim->num_dances, 1, MPI_INT, dance_counts, 1, MPI_INT, MPI_COMM_WORLD);
 
-    // Izračunaj ukupan broj i offsete
-    int *displs = (int *)malloc(size * sizeof(int));
+    int *displacements = (int *)malloc(size * sizeof(int));
     int total_dances = 0;
     for (int i = 0; i < size; i++)
     {
-        displs[i] = total_dances;
+        displacements[i] = total_dances;
         total_dances += dance_counts[i];
     }
 
@@ -500,20 +408,18 @@ void sync_dances(Simulation *sim, int rank, int size)
     {
         sim->num_dances = 0;
         free(dance_counts);
-        free(displs);
+        free(displacements);
         return;
     }
 
-    // Privremeni buffer za sve plesove
     WaggleDance *all_dances = (WaggleDance *)malloc(total_dances * sizeof(WaggleDance));
 
-    // Konvertuj counts i displs u bajtove
     int *byte_counts = (int *)malloc(size * sizeof(int));
-    int *byte_displs = (int *)malloc(size * sizeof(int));
+    int *byte_displacements = (int *)malloc(size * sizeof(int));
     for (int i = 0; i < size; i++)
     {
         byte_counts[i] = dance_counts[i] * sizeof(WaggleDance);
-        byte_displs[i] = displs[i] * sizeof(WaggleDance);
+        byte_displacements[i] = displacements[i] * sizeof(WaggleDance);
     }
 
     MPI_Allgatherv(
@@ -522,22 +428,19 @@ void sync_dances(Simulation *sim, int rank, int size)
         MPI_BYTE,
         all_dances,
         byte_counts,
-        byte_displs,
+        byte_displacements,
         MPI_BYTE,
         MPI_COMM_WORLD);
 
-    // Kopiraj sve plesove
     memcpy(sim->dances, all_dances, total_dances * sizeof(WaggleDance));
     sim->num_dances = total_dances;
 
     free(dance_counts);
-    free(displs);
+    free(displacements);
     free(byte_counts);
-    free(byte_displs);
+    free(byte_displacements);
     free(all_dances);
 }
-
-// ============ MAIN UPDATE LOOP ============
 
 void update_local_bees(Simulation *sim, unsigned int *seed, float *local_nectar)
 {
@@ -589,7 +492,6 @@ void update_local_bees(Simulation *sim, unsigned int *seed, float *local_nectar)
             break;
         }
 
-        // Provera energije
         if (bee->energy <= 0)
         {
             Vector2D hive_pos = {HIVE_X, HIVE_Y};
@@ -607,7 +509,6 @@ void update_local_bees(Simulation *sim, unsigned int *seed, float *local_nectar)
             }
         }
 
-        // Granice prostora
         if (bee->position.x < 0)
             bee->position.x = 0;
         if (bee->position.x > WORLD_SIZE)
@@ -638,42 +539,31 @@ void simulation_step(Simulation *sim, int rank, int size, MPI_Datatype bee_type,
 {
     float local_nectar = 0.0f;
 
-    // 1. Ažuriraj lokalne pčele
     update_local_bees(sim, seed, &local_nectar);
 
-    // 2. Sinhronizuj pčele između procesa
     sync_bees(sim, rank, size, bee_type);
 
-    // 3. Sinhronizuj plesove
     sync_dances(sim, rank, size);
 
-    // 4. Idle pčele gledaju plesove (samo lokalne)
     idle_bees_watch_dances(sim, seed);
 
-    // 5. Ponovo sinhronizuj pčele (za dance_followers update)
     sync_bees(sim, rank, size, bee_type);
 
-    // 6. Sinhronizuj cvetove
     sync_flowers(sim, rank, size);
 
-    // 7. Ažuriraj cvetove (samo rank 0, pa broadcast)
     if (rank == 0)
     {
         update_flowers(sim);
     }
     MPI_Bcast(sim->flowers, NUM_FLOWERS * sizeof(Flower), MPI_BYTE, 0, MPI_COMM_WORLD);
 
-    // 8. Saberi ukupan nektar
     float global_nectar;
     MPI_Allreduce(&local_nectar, &global_nectar, 1, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
     sim->total_nectar_collected += global_nectar;
 
-    // Reset dances
     sim->num_dances = 0;
     sim->timestep++;
 }
-
-// ============ STATISTICS ============
 
 void print_statistics(Simulation *sim, int rank)
 {
@@ -711,8 +601,6 @@ void print_statistics(Simulation *sim, int rank)
            sim->timestep, sim->total_nectar_collected, scouts, idle, dancing, followers, foraging, returning);
 }
 
-// ============ MAIN ============
-
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
@@ -734,13 +622,10 @@ int main(int argc, char **argv)
 
     Simulation *sim = create_simulation(rank, size);
 
-    // Seed za random - različit za svaki proces
-    unsigned int seed = 42 + rank * 1000;
+    unsigned int seed = rank * 1000;
 
-    // MPI datatype za Bee
     MPI_Datatype bee_type = create_bee_type();
 
-    // Meri vreme
     MPI_Barrier(MPI_COMM_WORLD);
     double start = MPI_Wtime();
 
@@ -748,7 +633,6 @@ int main(int argc, char **argv)
     {
         simulation_step(sim, rank, size, bee_type, &seed);
 
-        // Ispis svakih 1000 koraka
         // if (t % 1000 == 0)
         // {
         //     print_statistics(sim, rank);
