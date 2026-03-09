@@ -2,6 +2,8 @@
 
 Multi-agent simulation of honey bee foraging behavior with parallel implementations using OpenMP and OpenMPI.
 
+![Demo](demo/bee_simulation.gif)
+
 ## Overview
 
 This project simulates bee colony foraging behavior including:
